@@ -1,0 +1,1122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图片转点云音频可视化 (音频增强)</title>
+    <!-- 引入 Tailwind CSS for modern styling --><script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 Three.js 库用于 3D 渲染 --><script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- 引入 OrbitControls 库用于鼠标视角控制 (旋转, 缩放, 平移) --><script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- 引入 Font Awesome 免费版图标 --><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" />
+    <style>
+        /* 启用 Inter 字体 */
+        :root {
+            font-family: 'Inter', sans-serif;
+        }
+        /* 自定义加载指示器样式 - 极简深色 */
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 10;
+        }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #888; /* Gray spinner */
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 1rem;
+            display: none; /* Hidden by default, shown by JS */
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* 文件输入框隐藏 */
+        #imageFileInput, #audioFileInput {
+            display: none;
+        }
+        /* 确保 Three.js 容器占满视口 */
+        #container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        /* 优化范围输入条样式 */
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 8px;
+            background: #444;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 0;
+            padding: 0;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #aaa; /* Gray thumb */
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+        }
+        /* 控制面板的半透明背景和圆角 */
+        .control-panel {
+            background-color: rgba(30, 41, 59, 0.85); /* slate-800 with transparency */
+            backdrop-filter: blur(5px);
+            border-radius: 12px;
+            padding: 0.75rem; /* 略微缩小 padding */
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.5);
+            color: white;
+            max-height: 95vh; 
+            overflow-y: auto; 
+        }
+        /* 底部时间轴面板样式 */
+        #bottomTimeline {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            padding: 1rem 2rem;
+            background-color: rgba(30, 41, 59, 0.95); /* 更深一些的背景 */
+            backdrop-filter: blur(8px);
+            z-index: 20;
+            box-shadow: 0 -5px 15px rgba(0, 0, 0, 0.3);
+        }
+        /* 按钮悬停效果 */
+        button:hover:not(:disabled) {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+        button:active:not(:disabled) {
+            transform: translateY(1px);
+        }
+        /* 确保控制面板在移动设备上的布局良好 */
+        @media (max-width: 768px) {
+            .control-panel {
+                width: 95%;
+                position: fixed;
+                top: 0.5rem;
+                left: 50%;
+                transform: translateX(-50%);
+                padding: 0.75rem;
+                z-index: 10;
+            }
+            #bottomTimeline {
+                padding: 0.5rem 1rem;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 m-0 p-0 overflow-hidden">
+
+    <!-- Three.js 渲染容器 -->
+    <div id="container">
+
+        <!-- 加载和提示覆盖层 -->
+        <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+            <div id="spinner" class="spinner"></div>
+            <p id="loadingMessage" class="text-lg font-semibold text-gray-300"></p>
+        </div>
+        
+        <!-- HTML5 Audio Element (Hidden) -->
+        <audio id="audioPlayer" hidden></audio>
+
+        <!-- 左侧整合控制面板 (宽度缩小至 w-48) -->
+        <div id="controlPanel" class="control-panel absolute top-4 left-4 z-20 w-48">
+            
+            <!-- 1. 图片设置区域 -->
+            <div class="mb-4 pb-4 border-b border-gray-700">
+                <h3 class="text-base font-semibold mb-2 text-gray-300 flex items-center">
+                    <i class="fas fa-image mr-1"></i>图片设置
+                </h3>
+                
+                <!-- 新的拖放区域和缩略图 -->
+                <div id="imageDropZone" class="w-full h-24 border-2 border-dashed border-gray-600 rounded-lg p-1 mb-2 flex items-center justify-center cursor-pointer transition duration-300 hover:border-gray-400 relative">
+                    <img id="imageThumbnail" class="max-w-full max-h-full object-contain rounded-md hidden" alt="Uploaded Image Thumbnail">
+                    <p id="dropZoneImageText" class="text-xs text-gray-500 absolute pointer-events-none">拖放图片到此区域</p>
+                </div>
+                
+                <input type="file" id="imageFileInput" accept="image/*" />
+                <button id="uploadImageButton" class="w-full bg-gray-700 hover:bg-gray-600 text-white text-sm font-semibold py-1.5 px-2 rounded-lg transition duration-200 flex items-center justify-center">
+                    <i class="fas fa-upload mr-1"></i> 选择图片
+                </button>
+            </div>
+            
+            <!-- 2. 音频控制区域 -->
+            <div class="space-y-3 mb-4 pb-4 border-b border-gray-700">
+                <h3 class="text-base font-semibold mb-2 text-gray-300 flex items-center">
+                    <i class="fas fa-music mr-1"></i>音频控制
+                </h3>
+                
+                <!-- 新的音频拖放区域 -->
+                <div id="audioDropZone" class="w-full h-12 border-2 border-dashed border-gray-600 rounded-lg p-1 flex items-center justify-center cursor-pointer transition duration-300 hover:border-gray-400 relative">
+                    <p id="dropZoneAudioText" class="text-xs text-gray-500 absolute pointer-events-none">拖放音频到此区域</p>
+                </div>
+                
+                <!-- 音频上传 -->
+                <input type="file" id="audioFileInput" accept="audio/*" />
+                <button id="uploadAudioButton" class="w-full bg-gray-700 hover:bg-gray-600 text-white text-sm font-semibold py-1.5 px-2 rounded-lg transition duration-200 flex items-center justify-center">
+                    <i class="fas fa-upload mr-1"></i> 选择音频
+                </button>
+                <div id="audioStatus" class="text-xs text-gray-400 mt-1 text-center">未加载音频</div>
+                
+                <!-- 音频反应强度 (音量控制扰动幅度) -->
+                <div>
+                    <label for="audioReactionStrength" class="block text-xs font-medium mb-1">扰动幅度 (音量控制)</label>
+                    <input type="range" id="audioReactionStrength" min="0.0" max="3.0" value="1.0" step="0.1" class="w-full" />
+                    <p class="text-xs text-gray-400 mt-1">当前: <span id="audioReactionStrengthValue">1.0</span></p>
+                </div>
+            </div>
+            
+            <!-- 3. 点云基础参数 -->
+            <div class="space-y-3">
+                <h3 class="text-base font-semibold text-gray-300 flex items-center mb-2">
+                    <i class="fas fa-sliders-h mr-1"></i>点云参数
+                </h3>
+                 <!-- 基础深度强度 -->
+                <div>
+                    <label for="depthStrength" class="block text-xs font-medium mb-1">基础深度</label>
+                    <input type="range" id="depthStrength" min="0.1" max="5.0" value="1.5" step="0.1" class="w-full" />
+                    <p class="text-xs text-gray-400 mt-1">当前: <span id="depthStrengthValue">1.5</span></p>
+                </div>
+                
+                <!-- 点云密度 -->
+                <div>
+                    <label for="density" class="block text-xs font-medium mb-1">点云密度</label>
+                    <input type="range" id="density" min="10" max="100" value="50" step="1" class="w-full" />
+                    <p class="text-xs text-gray-400 mt-1">当前: <span id="densityValue">50</span>%</p>
+                </div>
+
+                <!-- 粒子大小 -->
+                <div>
+                    <label for="particleSize" class="block text-xs font-medium mb-1">粒子基础大小</label>
+                    <input type="range" id="particleSize" min="0.1" max="5.0" value="1.0" step="0.1" class="w-full" />
+                    <p class="text-xs text-gray-400 mt-1">当前: <span id="particleSizeValue">1.0</span></p>
+                </div>
+                
+                <!-- 颜色模式切换 -->
+                <div class="flex items-center justify-between">
+                    <label class="text-xs font-medium">原图颜色</label>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" id="useOriginalColor" class="sr-only peer" checked>
+                        <!-- Switch color changed to neutral gray -->
+                        <div class="w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-gray-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gray-500"></div>
+                    </label>
+                </div>
+                
+                <!-- 背景颜色 -->
+                <div>
+                    <label for="backgroundColor" class="block text-xs font-medium mb-1">背景颜色</label>
+                    <input type="color" id="backgroundColor" value="#111827" class="w-full h-8 rounded-lg cursor-pointer transition duration-200 hover:ring-2 hover:ring-gray-500" />
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+    
+    <!-- 底部时间轴和播放控件 -->
+    <div id="bottomTimeline" class="flex items-center space-x-4">
+        
+        <!-- 播放/暂停按钮 (改为灰色调) -->
+        <button id="playPauseButton" class="p-3 bg-gray-600 hover:bg-gray-500 text-white rounded-full transition duration-200 text-xl w-12 h-12 flex items-center justify-center shadow-xl disabled:bg-gray-700" disabled>
+            <i id="playPauseIcon" class="fas fa-play"></i>
+        </button>
+        
+        <!-- 时间显示 (左侧) -->
+        <div id="timeDisplay" class="text-sm font-mono w-16 text-white">0.00s</div>
+
+        <!-- 时间轴滑块 -->
+        <input type="range" id="timelineScrubber" min="0" max="1000" value="0" step="1" class="flex-grow" disabled>
+        
+        <!-- 总时长显示 (右侧) -->
+        <div id="durationDisplay" class="text-sm font-mono w-16 text-gray-400">0.00s</div>
+        
+    </div>
+
+    <script type="module">
+        // ------------------ Constants and Global Variables ------------------
+        let scene, camera, renderer, controls;
+        let container;
+        let textureCanvas, textureContext;
+        let originalWidth, originalHeight;
+
+        // Point Cloud data
+        let initialPositions; // 存储原始 X, Y 和基础 Z (亮度映射)
+        let pointCloudObject;
+
+        // Audio State
+        let audioContext;
+        let analyser;
+        let bufferSource; 
+        let dataArray;
+        const FFT_SIZE = 1024;
+        const BIN_COUNT = FFT_SIZE / 2; // 512 bins
+
+        // Custom Frequency Band Definitions
+        // 0-200Hz: Lows (Bass/Sub-bass) - Large movement
+        const BAND_LOW = [0, 10];      
+        // 200Hz-2kHz: Mids (Rhythm/Vocals) - Size modulation
+        const BAND_MID = [10, 60];     
+        // 2kHz-12.5kHz: Highs (Treble/Detail) - Fine perturbation
+        const BAND_HIGH = [60, 250];   
+
+        // Beat Detection State
+        let lastOverallEnergy = 0;
+        const BEAT_THRESHOLD = 0.5; // 触发节拍偏移所需的能量跳变阈值
+        let beatRandomOffset = new THREE.Vector3(0, 0, 0); // 随机偏移量
+        const BEAT_DECAY_RATE = 0.95; // 偏移量的衰减速度
+        
+        // UI elements
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingMessage = document.getElementById('loadingMessage');
+        const spinner = document.getElementById('spinner');
+        
+        // Image UI
+        const imageFileInput = document.getElementById('imageFileInput');
+        const uploadImageButton = document.getElementById('uploadImageButton');
+        const imageDropZone = document.getElementById('imageDropZone');
+        const imageThumbnail = document.getElementById('imageThumbnail');
+        const dropZoneImageText = document.getElementById('dropZoneImageText');
+
+        // Audio UI
+        const audioFileInput = document.getElementById('audioFileInput');
+        const uploadAudioButton = document.getElementById('uploadAudioButton');
+        const audioDropZone = document.getElementById('audioDropZone');
+        const dropZoneAudioText = document.getElementById('dropZoneAudioText');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const audioStatus = document.getElementById('audioStatus');
+
+        // Playback UI
+        const timeDisplay = document.getElementById('timeDisplay');
+        const durationDisplay = document.getElementById('durationDisplay'); 
+        const timelineScrubber = document.getElementById('timelineScrubber');
+        const playPauseButton = document.getElementById('playPauseButton');
+        const playPauseIcon = document.getElementById('playPauseIcon');
+        
+        // Parameters (controlled by UI)
+        let params = {
+            density: 50,
+            depthStrength: 1.5,
+            particleSize: 1.0,
+            backgroundColor: '#111827',
+            useOriginalColor: true,
+            audioReactionStrength: 1.0, // 扰动幅度 (总音量控制)
+        };
+        
+        // Playback state
+        let isAudioLoaded = false;
+        let isPlaying = false;
+
+        // ------------------ Utility Functions ------------------
+
+        /**
+         * 显示加载覆盖层和消息
+         * @param {string} message The message to display
+         * @param {boolean} showSpinner Whether to show the loading spinner
+         */
+        function showLoading(message, showSpinner = true) {
+            loadingMessage.textContent = message;
+            spinner.style.display = showSpinner ? 'block' : 'none';
+            loadingOverlay.style.display = 'flex';
+        }
+
+        /**
+         * 隐藏加载覆盖层
+         */
+        function hideLoading() {
+            loadingOverlay.style.display = 'none';
+        }
+        
+        /**
+         * 清除点云
+         */
+        function clearPointCloud() {
+            if (pointCloudObject) {
+                scene.remove(pointCloudObject);
+                pointCloudObject.geometry.dispose();
+                pointCloudObject.material.dispose();
+                pointCloudObject = null;
+                initialPositions = null;
+                originalWidth = null;
+                originalHeight = null;
+            }
+        }
+        
+        /**
+         * 清除音频状态
+         */
+        function clearAudio() {
+             audioPlayer.src = '';
+             isAudioLoaded = false;
+             isPlaying = false;
+             audioStatus.textContent = '未加载音频';
+             playPauseButton.disabled = true;
+             timelineScrubber.disabled = true;
+             updatePlayPauseButton(false);
+             timeDisplay.textContent = '0.00s';
+             durationDisplay.textContent = '0.00s';
+             timelineScrubber.value = 0;
+             // Suspend context to allow reuse
+             if (audioContext && audioContext.state !== 'closed') {
+                 audioContext.suspend();
+             }
+             dropZoneAudioText.textContent = '拖放音频到此区域';
+             audioDropZone.classList.remove('bg-gray-700'); // Remove status indicator
+        }
+
+        /**
+         * 清除缩略图
+         */
+        function clearThumbnail() {
+            imageThumbnail.src = '';
+            imageThumbnail.classList.add('hidden');
+            dropZoneImageText.classList.remove('hidden');
+        }
+
+        /**
+         * 清除所有内容
+         */
+        function clearAll() {
+             clearPointCloud();
+             clearAudio();
+             clearThumbnail();
+        }
+
+        /**
+         * 显示图片缩略图并隐藏提示文本
+         * @param {string} url The data URL or object URL of the image
+         */
+        function displayImageThumbnail(url) {
+            imageThumbnail.src = url;
+            imageThumbnail.classList.remove('hidden');
+            dropZoneImageText.classList.add('hidden');
+        }
+        
+        /**
+         * 更新音频拖放区域的状态文本
+         * @param {string} text The status text to display
+         * @param {boolean} isLoaded Whether the audio is loaded (changes background color)
+         */
+        function updateAudioDropZoneStatus(text, isLoaded = false) {
+             dropZoneAudioText.textContent = text;
+             if (isLoaded) {
+                 audioDropZone.classList.add('bg-gray-700');
+             } else {
+                 audioDropZone.classList.remove('bg-gray-700');
+             }
+             audioStatus.textContent = text;
+        }
+
+
+        // ------------------ Three.js Setup ------------------
+
+        /**
+         * 初始化 Three.js 场景、相机和渲染器，并设置 OrbitControls
+         */
+        function initThree() {
+            container = document.getElementById('container');
+            
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(params.backgroundColor);
+
+            // Camera
+            const aspect = window.innerWidth / window.innerHeight;
+            camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 1000);
+            camera.position.z = 15;
+            camera.lookAt(0, 0, 0);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+            
+            // Controls (用于鼠标交互)
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // 启用阻尼，使动画更平滑
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false; // 禁用平移时的视角移动
+            controls.minDistance = 5; // 最小缩放距离
+            controls.maxDistance = 100; // 最大缩放距离
+            
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize, false);
+            
+            // Init texture canvas for image processing
+            textureCanvas = document.createElement('canvas');
+            textureContext = textureCanvas.getContext('2d');
+
+            // Start render loop
+            animate();
+        }
+
+        /**
+         * 处理窗口大小变化
+         */
+        function onWindowResize() {
+            const aspect = window.innerWidth / window.innerHeight;
+            camera.aspect = aspect;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        /**
+         * 渲染循环 - 负责实时更新点云几何体和音频反应
+         */
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (pointCloudObject && isAudioLoaded && isPlaying && analyser && initialPositions) {
+                // Ensure AudioContext is running
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume();
+                }
+
+                analyser.getByteFrequencyData(dataArray);
+
+                let lowEnergy = 0, midEnergy = 0, highEnergy = 0, totalEnergy = 0;
+
+                // 1. Calculate energy for each band
+                for (let i = BAND_LOW[0]; i < BAND_LOW[1]; i++) lowEnergy += dataArray[i];
+                for (let i = BAND_MID[0]; i < BAND_MID[1]; i++) midEnergy += dataArray[i];
+                for (let i = BAND_HIGH[0]; i < BAND_HIGH[1]; i++) highEnergy += dataArray[i];
+                totalEnergy = lowEnergy + midEnergy + highEnergy;
+                
+                // Max possible energy for normalization (255 * range)
+                const LOW_RANGE = BAND_LOW[1] - BAND_LOW[0];
+                const MID_RANGE = BAND_MID[1] - BAND_MID[0];
+                const HIGH_RANGE = BAND_HIGH[1] - BAND_HIGH[0];
+                const TOTAL_RANGE = LOW_RANGE + MID_RANGE + HIGH_RANGE;
+
+                // Normalize energies to 0-1 range (approx)
+                const normalizedLow = (lowEnergy / (LOW_RANGE * 255));
+                const normalizedMid = (midEnergy / (MID_RANGE * 255));
+                const normalizedHigh = (highEnergy / (HIGH_RANGE * 255));
+                const normalizedOverallVolume = (totalEnergy / (TOTAL_RANGE * 255));
+
+                // 2. Beat Detection (Onset/Rhythm)
+                const energyChange = normalizedOverallVolume - lastOverallEnergy;
+                if (energyChange > BEAT_THRESHOLD && normalizedOverallVolume > 0.1) {
+                    // Sudden volume increase detected (a beat)
+                    // 触发随机偏移/重新排列感
+                    beatRandomOffset.set(
+                        (Math.random() * 2 - 1) * 0.5 * normalizedOverallVolume,
+                        (Math.random() * 2 - 1) * 0.5 * normalizedOverallVolume,
+                        (Math.random() * 2 - 1) * 0.5 * normalizedOverallVolume
+                    );
+                }
+                lastOverallEnergy = normalizedOverallVolume;
+
+                // Decay the random offset (使其短暂)
+                beatRandomOffset.multiplyScalar(BEAT_DECAY_RATE);
+                
+                // 3. Apply Visual Mappings
+                
+                const positions = pointCloudObject.geometry.attributes.position.array;
+                const count = pointCloudObject.geometry.attributes.position.count;
+                const scaleFactor = 8 / originalWidth;
+
+                // **音量控制**: Amplifies all effects (扰动幅度)
+                const strengthMultiplier = params.audioReactionStrength * Math.pow(normalizedOverallVolume, 2) * 10; // Use power for more dynamic range
+
+                // --- 中频 (粒子尺寸) ---
+                // Target size based on mid-frequency energy (moderate fluctuation/rhythm)
+                // 基础大小 + 中频能量波动
+                const sizeModulation = 1.0 + (normalizedMid * 3.0); 
+                pointCloudObject.material.size = params.particleSize * scaleFactor * 10 * sizeModulation;
+                pointCloudObject.material.needsUpdate = true;
+
+                // --- 低频 (大体积 Z 轴运动/爆炸感) ---
+                // Base Z is *always* from brightness. Low shift adds to it.
+                // 基础深度 * 深度系数 * 低频能量 * 总体强度
+                const lowShiftZ = params.depthStrength * normalizedLow * strengthMultiplier * 0.05; 
+                
+                // --- 高频 (X/Y/Z 细碎跳动) ---
+                const highPerturbationMagnitude = normalizedHigh * strengthMultiplier * 0.1;
+
+
+                for (let i = 0; i < count; i++) {
+                    const baseZ = initialPositions[i * 3 + 2]; // 亮度映射的基础 Z (不变)
+
+                    // 1. Base X/Y position
+                    const baseX = initialPositions[i * 3];
+                    const baseY = initialPositions[i * 3 + 1];
+
+                    // 2. High Frequency Perturbation (细碎跳动感)
+                    // Use a time-based sine/cos wave mixed with index for chaotic, fine movement
+                    const time = performance.now() * 0.005;
+                    const indexFactor = i * 0.1; // Make each particle move slightly differently
+
+                    const pertX = Math.sin(time + indexFactor) * highPerturbationMagnitude;
+                    const pertY = Math.cos(time + indexFactor) * highPerturbationMagnitude;
+                    const pertZ = Math.sin(time * 0.5 + indexFactor) * highPerturbationMagnitude;
+
+                    // 3. Final Z Calculation (Base Z + Low Shift + High Perturbation)
+                    const finalZ = baseZ + lowShiftZ + pertZ;
+                    
+                    // 4. Beat Offset (随机偏移/重新排列) - 叠加在所有坐标上
+                    positions[i * 3]     = baseX + pertX + beatRandomOffset.x;
+                    positions[i * 3 + 1] = baseY + pertY + beatRandomOffset.y;
+                    positions[i * 3 + 2] = finalZ + beatRandomOffset.z;
+                }
+
+                pointCloudObject.geometry.attributes.position.needsUpdate = true;
+            }
+
+            // 更新 OrbitControls 状态
+            if (controls) {
+                controls.update(); 
+            }
+
+            // Update timeline UI (even if paused, to show current time)
+            updateTimelineUI();
+
+            renderer.render(scene, camera);
+        }
+
+        // ------------------ Point Cloud Generation ------------------
+
+        /**
+         * 根据图像数据生成点云
+         * @param {ImageData} imageData 图像的像素数据
+         */
+        function createPointCloud(imageData) {
+            clearPointCloud();
+            
+            const { width, height, data } = imageData;
+            originalWidth = width;
+            originalHeight = height;
+
+            // 根据密度计算采样步长
+            const step = Math.floor(100 / params.density);
+            const numPoints = Math.floor((width * height) / (step * step));
+
+            const positions = new Float32Array(numPoints * 3);
+            const colors = new Float32Array(numPoints * 3);
+            initialPositions = new Float32Array(numPoints * 3); // Stores base positions
+
+            let pointIndex = 0;
+
+            // Normalize size: scale point cloud to a manageable size (e.g., width 8)
+            const scaleFactor = 8 / width;
+            const offsetX = (width * scaleFactor) / 2;
+            const offsetY = (height * scaleFactor) / 2;
+
+            for (let y = 0; y < height; y += step) {
+                for (let x = 0; x < width; x += step) {
+                    if (pointIndex < numPoints) {
+                        const i = (y * width + x) * 4;
+                        const r = data[i] / 255;
+                        const g = data[i + 1] / 255;
+                        const b = data[i + 2] / 255;
+                        const brightness = (r + g + b) / 3; // Brightness value (0-1)
+
+                        // 1. Position (X, Y) - Center aligned
+                        const px = x * scaleFactor - offsetX;
+                        const py = -(y * scaleFactor - offsetY); // Y-axis inverted
+                        
+                        // 2. Base Depth (Z) - Brightness mapped
+                        // Brighter pixels are closer (smaller Z)
+                        const baseZ = (1 - brightness) * params.depthStrength;
+                        
+                        // Store to current positions (initial state)
+                        positions[pointIndex * 3] = px;
+                        positions[pointIndex * 3 + 1] = py;
+                        positions[pointIndex * 3 + 2] = baseZ;
+                        
+                        // Store to initialPositions (the unchanging base depth)
+                        initialPositions[pointIndex * 3] = px;
+                        initialPositions[pointIndex * 3 + 1] = py;
+                        initialPositions[pointIndex * 3 + 2] = baseZ;
+
+
+                        // 3. Color
+                        colors[pointIndex * 3] = r;
+                        colors[pointIndex * 3 + 1] = g;
+                        colors[pointIndex * 3 + 2] = b;
+                        
+                        pointIndex++;
+                    }
+                }
+            }
+            
+            // Create Geometry
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            
+            // Create Material
+            const material = new THREE.PointsMaterial({
+                size: params.particleSize * scaleFactor * 10, 
+                vertexColors: params.useOriginalColor,
+                sizeAttenuation: true 
+            });
+
+            if (!params.useOriginalColor) {
+                 material.color = new THREE.Color(0xffffff);
+            }
+
+            pointCloudObject = new THREE.Points(geometry, material);
+            scene.add(pointCloudObject);
+
+            // 重新设置相机和控件到默认视角
+            camera.position.set(0, 0, 15);
+            camera.lookAt(0, 0, 0);
+            if (controls) {
+                 controls.reset();
+                 controls.update();
+            }
+        }
+
+        // ------------------ Image Loading and Processing ------------------
+
+        /**
+         * 处理图片文件读取和点云生成
+         * @param {File} file Uploaded image file
+         */
+        function handleImageFile(file) {
+            if (!file || !file.type.startsWith('image/')) {
+                showLoading('错误：请上传有效的图片文件。', false);
+                clearThumbnail();
+                return;
+            }
+
+            showLoading(`正在加载图片: ${file.name}...`);
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const image = new Image();
+                image.onload = function() {
+                    hideLoading();
+
+                    // 1. Set internal canvas dimensions
+                    textureCanvas.width = image.naturalWidth;
+                    textureCanvas.height = image.naturalHeight;
+                    
+                    // 2. Get ImageData
+                    textureContext.drawImage(image, 0, 0);
+                    const imageData = textureContext.getImageData(0, 0, image.naturalWidth, image.naturalHeight);
+
+                    // 3. Generate Point Cloud
+                    createPointCloud(imageData);
+
+                    // 4. Display Thumbnail
+                    displayImageThumbnail(image.src);
+                    
+                };
+                image.onerror = () => {
+                    showLoading('图片加载失败，请检查文件是否损坏。', false);
+                    clearThumbnail();
+                };
+                image.src = event.target.result;
+            };
+            reader.onerror = () => {
+                showLoading('文件读取失败。', false);
+                clearThumbnail();
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        // ------------------ Audio Processing ------------------
+        
+        /**
+         * 初始化 AudioContext 和 AnalyserNode
+         */
+        function initAudioContext() {
+            if (!audioContext || audioContext.state === 'closed') {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = FFT_SIZE;
+                
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+            }
+        }
+
+        /**
+         * 处理音频文件读取和初始化
+         * @param {File} file Uploaded audio file
+         */
+        function handleAudioFile(file) {
+            if (!file || !file.type.startsWith('audio/')) {
+                updateAudioDropZoneStatus('错误：请上传有效的音频文件。');
+                return;
+            }
+            
+            showLoading(`正在加载音频: ${file.name}...`);
+            
+            // 1. Stop current playback and clean up
+            audioPlayer.pause();
+            audioPlayer.currentTime = 0;
+            
+            // 2. Load new file to HTML5 Audio element
+            audioPlayer.src = URL.createObjectURL(file);
+            audioPlayer.load();
+
+            // 3. Wait for audio metadata to load
+            audioPlayer.onloadedmetadata = function() {
+                hideLoading();
+                
+                // 4. Initialize AudioContext and Connect Nodes
+                initAudioContext();
+                
+                if (bufferSource) bufferSource.disconnect();
+                
+                // Connect Audio element to AnalyserNode
+                bufferSource = audioContext.createMediaElementSource(audioPlayer);
+                bufferSource.connect(analyser);
+                analyser.connect(audioContext.destination);
+
+                isAudioLoaded = true;
+                playPauseButton.disabled = false;
+                timelineScrubber.disabled = false;
+                updateAudioDropZoneStatus(`已加载: ${file.name}`, true);
+                durationDisplay.textContent = audioPlayer.duration.toFixed(2) + 's';
+                
+                // Bind audio event listeners
+                audioPlayer.ontimeupdate = updateTimelineUI;
+                audioPlayer.onended = () => {
+                    pauseAudio();
+                    audioPlayer.currentTime = 0;
+                    updateTimelineUI();
+                };
+            };
+            audioPlayer.onerror = () => {
+                 hideLoading();
+                 updateAudioDropZoneStatus('音频加载或解码失败。');
+            }
+        }
+        
+        /**
+         * 播放音频
+         */
+        function playAudio() {
+            if (!isAudioLoaded) return;
+            
+            // Resume AudioContext if it's suspended
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+            
+            audioPlayer.play().then(() => {
+                isPlaying = true;
+                updatePlayPauseButton(true);
+            }).catch(e => {
+                console.error("Audio playback failed:", e);
+                updateAudioDropZoneStatus('需要用户交互才能播放音频。');
+            });
+        }
+
+        /**
+         * 暂停音频
+         */
+        function pauseAudio() {
+            if (!isAudioLoaded) return;
+            audioPlayer.pause();
+            isPlaying = false;
+            updatePlayPauseButton(false);
+        }
+
+        /**
+         * 更新播放/暂停按钮图标
+         * @param {boolean} isPlayingStatus Current playback status
+         */
+        function updatePlayPauseButton(isPlayingStatus) {
+            if (isPlayingStatus) {
+                playPauseIcon.classList.remove('fa-play');
+                playPauseIcon.classList.add('fa-pause');
+            } else {
+                playPauseIcon.classList.remove('fa-pause');
+                playPauseIcon.classList.add('fa-play');
+            }
+        }
+        
+        /**
+         * 更新时间轴 UI
+         */
+        function updateTimelineUI() {
+            if (!isAudioLoaded || !audioPlayer.duration) {
+                timeDisplay.textContent = '0.00s';
+                timelineScrubber.value = 0;
+                return;
+            }
+            
+            const currentTime = audioPlayer.currentTime;
+            const duration = audioPlayer.duration;
+            
+            // Update time display
+            timeDisplay.textContent = currentTime.toFixed(2) + 's';
+            
+            // Update scrubber position (0 - 1000)
+            if (duration > 0 && audioPlayer.readyState >= 1) {
+                const percent = (currentTime / duration) * 1000;
+                // Only update scrubber if user is not dragging it
+                if (!timelineScrubber.isDragging) {
+                     timelineScrubber.value = percent;
+                }
+            }
+        }
+        
+        /**
+         * 拖动时间轴
+         * @param {number} percent New time percentage (0-1000)
+         */
+        function scrubTimeline(percent) {
+            if (!isAudioLoaded || !audioPlayer.duration) return;
+            
+            const newTime = (percent / 1000) * audioPlayer.duration;
+            audioPlayer.currentTime = newTime;
+        }
+
+
+        // ------------------ UI Event Handlers ------------------
+        
+        /**
+         * 绑定所有参数输入事件
+         */
+        function setupParameterListeners() {
+            const densityInput = document.getElementById('density');
+            const depthStrengthInput = document.getElementById('depthStrength');
+            const particleSizeInput = document.getElementById('particleSize');
+            const backgroundColorInput = document.getElementById('backgroundColor');
+            const useOriginalColorInput = document.getElementById('useOriginalColor');
+            const audioReactionStrengthInput = document.getElementById('audioReactionStrength');
+            const controlPanel = document.getElementById('controlPanel');
+            const bottomTimeline = document.getElementById('bottomTimeline');
+
+            // 阻止控制面板和时间轴上的事件冒泡，以防止误触 3D 控件
+            function stopPropagation(e) { e.stopPropagation(); }
+            
+            controlPanel.addEventListener('mousedown', stopPropagation);
+            controlPanel.addEventListener('touchstart', stopPropagation);
+            bottomTimeline.addEventListener('mousedown', stopPropagation);
+            bottomTimeline.addEventListener('touchstart', stopPropagation);
+
+
+            // Density
+            densityInput.addEventListener('input', (e) => {
+                params.density = parseInt(e.target.value);
+                document.getElementById('densityValue').textContent = params.density;
+            });
+            densityInput.addEventListener('change', () => {
+                if (originalWidth) {
+                     const imageData = textureContext.getImageData(0, 0, originalWidth, originalHeight);
+                     // 重新生成点云以更新密度
+                     createPointCloud(imageData);
+                }
+            });
+
+            // Base Depth Strength
+            depthStrengthInput.addEventListener('input', (e) => {
+                params.depthStrength = parseFloat(e.target.value);
+                document.getElementById('depthStrengthValue').textContent = params.depthStrength.toFixed(1);
+            });
+            depthStrengthInput.addEventListener('change', () => {
+                if (originalWidth) {
+                     // 重新生成点云以更新基础 Z 坐标
+                     const imageData = textureContext.getImageData(0, 0, originalWidth, originalHeight);
+                     createPointCloud(imageData);
+                }
+            });
+            
+            // Audio Reaction Strength (扰动幅度)
+            audioReactionStrengthInput.addEventListener('input', (e) => {
+                params.audioReactionStrength = parseFloat(e.target.value);
+                document.getElementById('audioReactionStrengthValue').textContent = params.audioReactionStrength.toFixed(1);
+            });
+
+            // Particle Size (基础大小)
+            particleSizeInput.addEventListener('input', (e) => {
+                params.particleSize = parseFloat(e.target.value);
+                document.getElementById('particleSizeValue').textContent = params.particleSize.toFixed(1);
+            });
+            
+            // Background Color
+            backgroundColorInput.addEventListener('input', (e) => {
+                 params.backgroundColor = e.target.value;
+                 if (scene) { scene.background = new THREE.Color(params.backgroundColor); }
+            });
+            
+            // Original Color Toggle
+            useOriginalColorInput.addEventListener('change', () => {
+                params.useOriginalColor = useOriginalColorInput.checked;
+                if (pointCloudObject) {
+                    pointCloudObject.material.vertexColors = params.useOriginalColor;
+                    pointCloudObject.material.needsUpdate = true;
+                }
+            });
+            
+            // Play/Pause Button
+            playPauseButton.addEventListener('click', () => {
+                if (isPlaying) { pauseAudio(); } 
+                else { playAudio(); }
+            });
+
+            // Timeline Scrubber - Start dragging
+            timelineScrubber.addEventListener('mousedown', () => {
+                timelineScrubber.isDragging = true;
+                pauseAudio(); // Pause audio when scrubbing starts
+            });
+            timelineScrubber.addEventListener('touchstart', () => {
+                timelineScrubber.isDragging = true;
+                pauseAudio(); 
+            });
+
+            // Timeline Scrubber - While dragging
+            timelineScrubber.addEventListener('input', (e) => {
+                scrubTimeline(e.target.value);
+            });
+
+            // Timeline Scrubber - End dragging
+            timelineScrubber.addEventListener('mouseup', () => {
+                timelineScrubber.isDragging = false;
+                playAudio(); // Resume playback
+            });
+            timelineScrubber.addEventListener('touchend', () => {
+                timelineScrubber.isDragging = false;
+                playAudio();
+            });
+        }
+        
+        /**
+         * 绑定文件上传和拖放事件
+         */
+        function setupFileHandling() {
+            // --- Image Upload Handling ---
+
+            // Image Upload via Button
+            uploadImageButton.addEventListener('click', () => {
+                imageFileInput.click();
+            });
+            
+            // Image Upload via File Input
+            imageFileInput.addEventListener('change', (e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                    handleImageFile(e.target.files[0]);
+                }
+            });
+
+            // Image Drop Zone (Click)
+            imageDropZone.addEventListener('click', () => {
+                imageFileInput.click(); 
+            });
+
+            // Image Drop Zone (Drag Over)
+            imageDropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                imageDropZone.classList.add('border-gray-400', 'bg-gray-800'); // Visual feedback
+                dropZoneImageText.textContent = '松开鼠标以上传图片';
+            });
+
+            // Image Drop Zone (Drag Leave)
+            imageDropZone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                imageDropZone.classList.remove('border-gray-400', 'bg-gray-800');
+                dropZoneImageText.textContent = '拖放图片到此区域';
+            });
+
+            // Image Drop Zone (Drop)
+            imageDropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                imageDropZone.classList.remove('border-gray-400', 'bg-gray-800');
+                dropZoneImageText.textContent = '拖放图片到此区域';
+
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    const file = e.dataTransfer.files[0];
+                    if (file.type.startsWith('image/')) {
+                         handleImageFile(file);
+                    } else {
+                         showLoading('请拖入图片文件到此区域。', false);
+                    }
+                }
+            });
+            
+            // --- Audio Upload Handling ---
+
+            // Audio Upload via Button
+            uploadAudioButton.addEventListener('click', () => {
+                audioFileInput.click();
+            });
+
+            // Audio Upload via File Input
+            audioFileInput.addEventListener('change', (e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                    handleAudioFile(e.target.files[0]);
+                }
+            });
+            
+            // Audio Drop Zone (Click)
+            audioDropZone.addEventListener('click', () => {
+                audioFileInput.click(); 
+            });
+
+            // Audio Drop Zone (Drag Over)
+            audioDropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                audioDropZone.classList.add('border-gray-400', 'bg-gray-800'); // Visual feedback
+                dropZoneAudioText.textContent = '松开鼠标以上传音频';
+            });
+
+            // Audio Drop Zone (Drag Leave)
+            audioDropZone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                audioDropZone.classList.remove('border-gray-400', 'bg-gray-800');
+                dropZoneAudioText.textContent = '拖放音频到此区域';
+            });
+
+            // Audio Drop Zone (Drop)
+            audioDropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                audioDropZone.classList.remove('border-gray-400', 'bg-gray-800');
+                dropZoneAudioText.textContent = '拖放音频到此区域';
+
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    const file = e.dataTransfer.files[0];
+                    if (file.type.startsWith('audio/')) {
+                         handleAudioFile(file);
+                    } else {
+                         showLoading('请拖入音频文件到此区域。', false);
+                    }
+                }
+            });
+        }
+
+        // ------------------ Initialization ------------------
+        window.onload = function() {
+            initThree();
+            setupParameterListeners();
+            setupFileHandling();
+            clearAll(); // Clean up initial state
+            
+            // Initial state hint
+            showLoading('请上传图片（生成点云）和音频文件（驱动动画）。使用鼠标左键旋转，滚轮缩放，右键平移视角。-@Tomorro', false); 
+        };
+    </script>
+</body>
+</html>
